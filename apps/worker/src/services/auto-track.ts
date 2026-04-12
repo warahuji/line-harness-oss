@@ -150,13 +150,13 @@ export async function autoTrackContent(
 
   const urlMap = await createTrackingMap(db, urls, workerUrl);
 
-  // Text messages → convert to Flex with buttons
+  // Text messages → replace URLs inline, keep as text (no Flex conversion)
   if (messageType === 'text') {
-    const links = Array.from(urlMap.values());
-    return {
-      messageType: 'flex',
-      content: textToFlex(content, links),
-    };
+    let result = content;
+    for (const [original, { trackingUrl }] of urlMap) {
+      result = result.split(original).join(trackingUrl);
+    }
+    return { messageType: 'text', content: result };
   }
 
   // Flex messages → replace URLs inline in the JSON

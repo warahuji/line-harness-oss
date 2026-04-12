@@ -195,6 +195,70 @@ forms.get('/api/forms/:id/submissions', async (c) => {
   }
 });
 
+// POST /api/forms/:id/opened — record form open event (public, used by LIFF)
+forms.post('/api/forms/:id/opened', async (c) => {
+  try {
+    const formId = c.req.param('id');
+    const body = await c.req.json<{ lineUserId?: string; friendId?: string }>();
+    const lineUserId = body.lineUserId;
+    const friendId = body.friendId;
+
+    // Resolve friend
+    let friend = friendId
+      ? await getFriendById(c.env.DB, friendId)
+      : lineUserId
+        ? await getFriendByLineUserId(c.env.DB, lineUserId)
+        : null;
+
+    const now = jstNow();
+    await c.env.DB.prepare(
+      'INSERT INTO form_opens (id, form_id, friend_id, friend_name, opened_at) VALUES (?, ?, ?, ?, ?)',
+    ).bind(
+      crypto.randomUUID(),
+      formId,
+      friend?.id ?? null,
+      friend?.display_name ?? null,
+      now,
+    ).run();
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('POST /api/forms/:id/opened error:', err);
+    return c.json({ success: true }); // non-blocking, always succeed
+  }
+});
+
+// POST /api/forms/:id/partial — save survey answers without x_username (public, used by LIFF page 1)
+forms.post('/api/forms/:id/partial', async (c) => {
+  try {
+    const formId = c.req.param('id');
+    const body = await c.req.json<{ lineUserId?: string; friendId?: string; data?: Record<string, unknown> }>();
+
+    // Resolve friend
+    let friend = body.friendId
+      ? await getFriendById(c.env.DB, body.friendId)
+      : body.lineUserId
+        ? await getFriendByLineUserId(c.env.DB, body.lineUserId)
+        : null;
+
+    if (!friend) {
+      return c.json({ success: false, error: 'Friend not found' }, 404);
+    }
+
+    // Save survey data to friend metadata (merge with existing)
+    const existingMeta = friend.metadata ? JSON.parse(friend.metadata) : {};
+    const merged = { ...existingMeta, ...body.data };
+    await c.env.DB.prepare(
+      'UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?',
+    ).bind(JSON.stringify(merged), jstNow(), friend.id).run();
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('POST /api/forms/:id/partial error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // POST /api/forms/:id/submit — submit form (public, used by LIFF)
 forms.post('/api/forms/:id/submit', async (c) => {
   try {

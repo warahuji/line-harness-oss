@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { LineClient } from '@line-crm/line-sdk';
 import { getLineAccounts, getTrafficPoolBySlug, getRandomPoolAccount, getPoolAccounts } from '@line-crm/db';
 import { processStepDeliveries } from './services/step-delivery.js';
-import { processScheduledBroadcasts } from './services/broadcast.js';
+import { processScheduledBroadcasts, processQueuedBroadcasts } from './services/broadcast.js';
 import { processReminderDeliveries } from './services/reminder-delivery.js';
 import { checkAccountHealth } from './services/ban-monitor.js';
 import { refreshLineAccessTokens } from './services/token-refresh.js';
@@ -38,6 +38,7 @@ import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { images } from './routes/images.js';
+import { accountSettings } from './routes/account-settings.js';
 import { setup } from './routes/setup.js';
 import { autoReplies } from './routes/auto-replies.js';
 import { trafficPools } from './routes/traffic-pools.js';
@@ -110,6 +111,7 @@ app.route('/', images);
 app.route('/', setup);
 app.route('/', autoReplies);
 app.route('/', trafficPools);
+app.route('/', accountSettings);
 app.route('/', meetCallback);
 app.route('/', messageTemplates);
 
@@ -361,6 +363,11 @@ async function scheduled(
       processReminderDeliveries(env.DB, lineClient),
     );
   }
+  // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
+  // ロック解除: タイムアウトでstuckしたブロードキャストを復旧
+  const { recoverStalledBroadcasts } = await import('@line-crm/db');
+  jobs.push(recoverStalledBroadcasts(env.DB));
+  jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
   jobs.push(checkAccountHealth(env.DB));
   jobs.push(refreshLineAccessTokens(env.DB));
 
@@ -371,6 +378,14 @@ async function scheduled(
     await processInsightFetch(env.DB, lineClients, defaultLineClient);
   } catch (e) {
     console.error('Insight fetch error:', e);
+  }
+
+  // Cross-account duplicate detection & auto-tagging
+  try {
+    const { processDuplicateDetection } = await import('./services/duplicate-detect.js');
+    await processDuplicateDetection(env.DB);
+  } catch (e) {
+    console.error('Duplicate detection error:', e);
   }
 }
 

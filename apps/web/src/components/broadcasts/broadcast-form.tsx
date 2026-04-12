@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { Tag } from '@line-crm/shared'
 import { api, type ApiBroadcast } from '@/lib/api'
+import { useAccount } from '@/contexts/account-context'
 import FlexPreviewComponent from '@/components/flex-preview'
 
 interface BroadcastFormProps {
@@ -28,6 +29,7 @@ interface FormState {
 }
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
+  const { selectedAccountId } = useAccount()
   const [form, setForm] = useState<FormState>({
     title: '',
     messageType: 'text',
@@ -61,6 +63,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         targetType: form.targetType,
         targetTagId: form.targetType === 'tag' ? form.targetTagId || null : null,
         status: 'draft',
+        lineAccountId: selectedAccountId || null,
         // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
         // Append +09:00 so new Date() parses correctly for epoch comparisons
         scheduledAt: form.sendNow || !form.scheduledAt

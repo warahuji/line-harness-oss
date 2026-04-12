@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import TestRecipientsSetting from '@/components/accounts/test-recipients-setting'
 
 interface LineAccountListItem {
   id: string
@@ -219,7 +220,9 @@ export default function AccountsPage() {
                   <p className="text-xs text-gray-400">今月送信</p>
                 </div>
               </div>
-              <div className="flex items-center justify-between">
+              <TestRecipientsSetting accountId={account.id} />
+
+              <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
                 <p className="text-xs text-gray-400">
                   登録: {new Date(account.createdAt).toLocaleDateString('ja-JP')}
                 </p>

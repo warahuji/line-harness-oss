@@ -76,9 +76,10 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
 
 export type FriendListParams = {
   offset?: string
-  limit?: string
+  limit?: string | number
   tagId?: string
   accountId?: string
+  search?: string
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
@@ -87,10 +88,11 @@ export const api = {
   friends: {
     list: (params?: FriendListParams) => {
       const query: Record<string, string> = {}
-      if (params?.offset) query.offset = params.offset
-      if (params?.limit) query.limit = params.limit
+      if (params?.offset) query.offset = String(params.offset)
+      if (params?.limit) query.limit = String(params.limit)
       if (params?.tagId) query.tagId = params.tagId
       if (params?.accountId) query.lineAccountId = params.accountId
+      if (params?.search) query.search = params.search
       return fetchApi<ApiResponse<PaginatedResponse<FriendWithTags>>>(
         '/api/friends?' + new URLSearchParams(query)
       )
@@ -175,6 +177,7 @@ export const api = {
       targetTagId?: string | null
       scheduledAt?: string | null
       status?: ApiBroadcast['status']
+      lineAccountId?: string | null
     }) =>
       fetchApi<ApiResponse<ApiBroadcast>>('/api/broadcasts', {
         method: 'POST',
@@ -203,6 +206,33 @@ export const api = {
       fetchApi<ApiResponse<BroadcastInsight | null>>(`/api/broadcasts/${id}/insight`),
     fetchInsight: (id: string) =>
       fetchApi<ApiResponse<BroadcastInsight>>(`/api/broadcasts/${id}/fetch-insight`, { method: 'POST' }),
+    testSend: (id: string) =>
+      fetchApi<{ success: boolean; sent?: number; failed?: number; error?: string }>(`/api/broadcasts/${id}/test-send`, { method: 'POST' }),
+    getProgress: (id: string) =>
+      fetchApi<{ success: boolean; data?: { status: string; totalCount: number; successCount: number; batchOffset: number } }>(`/api/broadcasts/${id}/progress`),
+    sendSegment: (id: string, conditions: unknown) =>
+      fetchApi<ApiResponse<ApiBroadcast>>(`/api/broadcasts/${id}/send-segment`, {
+        method: 'POST',
+        body: JSON.stringify({ conditions }),
+      }),
+  },
+
+  segments: {
+    count: (conditions: unknown, accountId?: string) =>
+      fetchApi<{ success: boolean; count?: number; error?: string }>('/api/segments/count', {
+        method: 'POST',
+        body: JSON.stringify({ conditions, accountId }),
+      }),
+  },
+
+  accountSettings: {
+    getTestRecipients: (accountId: string) =>
+      fetchApi<{ success: boolean; data: Array<{ id: string; displayName: string; pictureUrl: string | null }> }>(`/api/account-settings/test-recipients?accountId=${accountId}`),
+    updateTestRecipients: (accountId: string, friendIds: string[]) =>
+      fetchApi<{ success: boolean }>('/api/account-settings/test-recipients', {
+        method: 'PUT',
+        body: JSON.stringify({ accountId, friendIds }),
+      }),
   },
 
   // ── Round 2 APIs ─────────────────────────────────────────────────────────

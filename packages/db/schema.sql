@@ -109,10 +109,25 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   success_count   INTEGER NOT NULL DEFAULT 0,
   line_request_id   TEXT,
   aggregation_unit  TEXT,
+  batch_offset    INTEGER NOT NULL DEFAULT 0,
+  segment_conditions TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts (status);
+
+-- ============================================================
+--- Account Settings
+--- ============================================================
+CREATE TABLE IF NOT EXISTS account_settings (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  key             TEXT NOT NULL,
+  value           TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(line_account_id, key)
+);
 
 -- ============================================================
 -- Broadcast Insights
@@ -147,7 +162,7 @@ CREATE TABLE IF NOT EXISTS messages_log (
   content          TEXT NOT NULL,
   broadcast_id     TEXT REFERENCES broadcasts (id) ON DELETE SET NULL,
   scenario_step_id TEXT REFERENCES scenario_steps (id) ON DELETE SET NULL,
-  delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply')),
+  delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 

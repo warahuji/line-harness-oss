@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import type { Tag } from '@line-crm/shared'
 import { api, type ApiBroadcast, type BroadcastInsight } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
+import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 const ccPrompts = [
@@ -49,13 +51,24 @@ function formatDatetime(iso: string | null): string {
 }
 
 export default function BroadcastsPage() {
+  const searchParams = useSearchParams()
+  const detailId = searchParams.get('id')
+
+  // If ?id=xxx is present, show detail view
+  if (detailId) {
+    return <BroadcastDetail broadcastId={detailId} />
+  }
+
+  return <BroadcastList />
+}
+
+function BroadcastList() {
   const { selectedAccountId } = useAccount()
   const [broadcasts, setBroadcasts] = useState<ApiBroadcast[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
-  const [sendingId, setSendingId] = useState<string | null>(null)
   const [insights, setInsights] = useState<Record<string, BroadcastInsight>>({})
   const [fetchingInsight, setFetchingInsight] = useState<string | null>(null)
 
@@ -106,19 +119,6 @@ export default function BroadcastsPage() {
   useEffect(() => {
     broadcasts.filter(b => b.status === 'sent').forEach(b => loadInsight(b.id))
   }, [broadcasts])
-
-  const handleSend = async (id: string) => {
-    if (!confirm('この配信を今すぐ送信してもよいですか？')) return
-    setSendingId(id)
-    try {
-      await api.broadcasts.send(id)
-      load()
-    } catch {
-      setError('送信に失敗しました')
-    } finally {
-      setSendingId(null)
-    }
-  }
 
   const handleDelete = async (id: string) => {
     if (!confirm('この配信を削除してもよいですか？')) return
@@ -215,14 +215,15 @@ export default function BroadcastsPage() {
               {broadcasts.map((broadcast) => {
                 const statusInfo = statusConfig[broadcast.status]
                 const tagName = getTagName(broadcast.targetTagId)
-                const isSending = sendingId === broadcast.id
 
                 return (
                   <tr key={broadcast.id} className="hover:bg-gray-50 transition-colors">
                     {/* Title */}
                     <td className="px-4 py-3">
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{broadcast.title}</p>
+                        <a href={`/broadcasts?id=${broadcast.id}`} className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline">
+                          {broadcast.title}
+                        </a>
                         <p className="text-xs text-gray-400 mt-0.5">
                           {broadcast.messageType === 'text' ? 'テキスト' : broadcast.messageType === 'image' ? '画像' : 'Flex'}
                         </p>
@@ -302,16 +303,6 @@ export default function BroadcastsPage() {
                     {/* Actions */}
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {broadcast.status === 'draft' && (
-                          <button
-                            onClick={() => handleSend(broadcast.id)}
-                            disabled={isSending}
-                            className="px-3 py-1 min-h-[44px] text-xs font-medium text-white rounded-md disabled:opacity-50 transition-opacity"
-                            style={{ backgroundColor: '#06C755' }}
-                          >
-                            {isSending ? '送信中...' : '今すぐ送信'}
-                          </button>
-                        )}
                         {(broadcast.status === 'draft' || broadcast.status === 'scheduled') && (
                           <button
                             onClick={() => handleDelete(broadcast.id)}

@@ -39,11 +39,18 @@ export async function processSegmentSend(
   let successCount = 0;
 
   try {
-    // Build and execute segment query to get matching friends
+    // Build and execute segment query to get matching friends (アカウントで絞り込み)
     const { sql, bindings } = buildSegmentQuery(condition);
+    const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+    let finalSql = sql;
+    const finalBindings = [...bindings];
+    if (broadcastAccountId) {
+      finalSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      finalBindings.unshift(broadcastAccountId);
+    }
     const queryResult = await db
-      .prepare(sql)
-      .bind(...bindings)
+      .prepare(finalSql)
+      .bind(...finalBindings)
       .all<FriendRow>();
 
     const friends = queryResult.results ?? [];

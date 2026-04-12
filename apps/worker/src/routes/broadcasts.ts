@@ -8,9 +8,10 @@ import {
 } from '@line-crm/db';
 import type { Broadcast as DbBroadcast, BroadcastMessageType, BroadcastTargetType } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { processBroadcastSend } from '../services/broadcast.js';
+import { processBroadcastSend, buildMessage } from '../services/broadcast.js';
 import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
+import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const broadcasts = new Hono<Env>();
@@ -40,16 +41,7 @@ function serializeBroadcast(row: DbBroadcast) {
 broadcasts.get('/api/broadcasts', async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
-    let items: DbBroadcast[];
-    if (lineAccountId) {
-      const result = await c.env.DB
-        .prepare(`SELECT * FROM broadcasts WHERE line_account_id = ? ORDER BY created_at DESC`)
-        .bind(lineAccountId)
-        .all<DbBroadcast>();
-      items = result.results;
-    } else {
-      items = await getBroadcasts(c.env.DB);
-    }
+    const items = await getBroadcasts(c.env.DB, lineAccountId || undefined);
     return c.json({ success: true, data: items.map(serializeBroadcast) });
   } catch (err) {
     console.error('GET /api/broadcasts error:', err);
@@ -187,7 +179,7 @@ broadcasts.delete('/api/broadcasts/:id', async (c) => {
   }
 });
 
-// POST /api/broadcasts/:id/send - send now
+// POST /api/broadcasts/:id/send - send now (tag配信で500人超はキュー方式)
 broadcasts.post('/api/broadcasts/:id/send', async (c) => {
   try {
     const id = c.req.param('id');
@@ -201,8 +193,26 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 400);
     }
 
+    // target_type='tag' で対象が多い場合はキュー方式
+    if (existing.target_type === 'tag' && existing.target_tag_id) {
+      const { getFriendsByTag } = await import('@line-crm/db');
+      const friends = await getFriendsByTag(c.env.DB, existing.target_tag_id);
+      const followingCount = friends.filter(f => f.is_following).length;
+
+      if (followingCount > 500) {
+        // Set segment_conditions to a marker so getQueuedBroadcasts() can find it
+        const tagMarker = JSON.stringify({ operator: 'AND', rules: [{ type: 'tag_exists', value: existing.target_tag_id }] });
+        await c.env.DB.prepare(
+          `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ?`
+        ).bind(tagMarker, id).run();
+        const result = await getBroadcastById(c.env.DB, id);
+        return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
+      }
+    }
+
+    // 500人以下またはtarget_type='all'は即時送信
     let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-    const broadcastAccountId = (existing as Record<string, unknown>).line_account_id;
+    const broadcastAccountId = (existing as unknown as Record<string, unknown>).line_account_id;
     if (broadcastAccountId) {
       const { getLineAccountById } = await import('@line-crm/db');
       const account = await getLineAccountById(c.env.DB, broadcastAccountId as string);
@@ -219,7 +229,7 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
   }
 });
 
-// POST /api/broadcasts/:id/send-segment - send to a filtered segment
+// POST /api/broadcasts/:id/send-segment - send to a filtered segment (常にキュー方式)
 broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
   try {
     const id = c.req.param('id');
@@ -242,18 +252,13 @@ broadcasts.post('/api/broadcasts/:id/send-segment', async (c) => {
       );
     }
 
-    let segAccessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-    const segAccountId = (existing as Record<string, unknown>).line_account_id;
-    if (segAccountId) {
-      const { getLineAccountById } = await import('@line-crm/db');
-      const account = await getLineAccountById(c.env.DB, segAccountId as string);
-      if (account) segAccessToken = account.channel_access_token;
-    }
-    const lineClient = new LineClient(segAccessToken);
-    await processSegmentSend(c.env.DB, lineClient, id, body.conditions);
+    // セグメント配信は常にキュー方式（タイムアウト防止）
+    await c.env.DB.prepare(
+      `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ?`
+    ).bind(JSON.stringify(body.conditions), id).run();
 
     const result = await getBroadcastById(c.env.DB, id);
-    return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
+    return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send-segment error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -377,6 +382,119 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', async (c) => {
   } catch (err) {
     console.error('POST /api/broadcasts/:id/fetch-insight error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// POST /api/broadcasts/:id/test-send — send to test recipients with 【テスト配信】 label
+broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
+  const id = c.req.param('id');
+  try {
+    const broadcast = await getBroadcastById(c.env.DB, id);
+    if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
+    if (broadcast.status !== 'draft') {
+      return c.json({ success: false, error: 'Only draft broadcasts can be test-sent' }, 400);
+    }
+
+    const raw = broadcast as unknown as Record<string, unknown>;
+    const accountId = raw.line_account_id as string | null;
+    if (!accountId) return c.json({ success: false, error: 'Broadcast has no line_account_id' }, 400);
+
+    // Get test recipients
+    const setting = await c.env.DB.prepare(
+      `SELECT value FROM account_settings WHERE line_account_id = ? AND key = 'test_recipients'`
+    ).bind(accountId).first<{ value: string }>();
+    if (!setting) return c.json({ success: false, error: 'No test recipients configured' }, 400);
+
+    const friendIds: string[] = JSON.parse(setting.value);
+    if (friendIds.length === 0) return c.json({ success: false, error: 'No test recipients configured' }, 400);
+
+    const placeholders = friendIds.map(() => '?').join(',');
+    const friends = await c.env.DB.prepare(
+      `SELECT id, line_user_id FROM friends WHERE id IN (${placeholders})`
+    ).bind(...friendIds).all<{ id: string; line_user_id: string }>();
+
+    const account = await getLineAccountById(c.env.DB, accountId);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 400);
+    const lineClient = new LineClient(account.channel_access_token);
+
+    // Build message with test label
+    let messageContent = broadcast.message_content;
+    if (broadcast.message_type === 'text') {
+      messageContent = `【テスト配信】\n${messageContent}`;
+    }
+
+    // Auto-track URLs
+    const { autoTrackContent } = await import('../services/auto-track.js');
+    const tracked = await autoTrackContent(c.env.DB, broadcast.message_type, messageContent, c.env.WORKER_URL);
+
+    const { extractFlexAltText } = await import('../utils/flex-alt-text.js');
+    const altText = raw.alt_text as string || (tracked.messageType === 'flex' ? extractFlexAltText(tracked.content) : undefined);
+    const message = buildMessage(tracked.messageType, tracked.content, altText);
+
+    let sent = 0;
+    let failed = 0;
+    const now = new Date(Date.now() + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
+
+    for (const friend of friends.results) {
+      try {
+        await lineClient.pushMessage(friend.line_user_id, [message]);
+        sent++;
+        await c.env.DB.prepare(
+          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, delivery_type, created_at)
+           VALUES (?, ?, 'outgoing', ?, ?, NULL, 'test', ?)`
+        ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, messageContent, now).run();
+      } catch (err) {
+        console.error(`Test send to ${friend.id} failed:`, err);
+        failed++;
+      }
+    }
+
+    return c.json({ success: true, sent, failed });
+  } catch (err) {
+    console.error('POST /api/broadcasts/:id/test-send error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/broadcasts/:id/progress — batch send progress
+broadcasts.get('/api/broadcasts/:id/progress', async (c) => {
+  const id = c.req.param('id');
+  const broadcast = await getBroadcastById(c.env.DB, id);
+  if (!broadcast) return c.json({ success: false, error: 'Not found' }, 404);
+
+  const raw = broadcast as unknown as Record<string, unknown>;
+  return c.json({
+    success: true,
+    data: {
+      status: broadcast.status,
+      totalCount: broadcast.total_count,
+      successCount: broadcast.success_count,
+      batchOffset: raw.batch_offset as number,
+    },
+  });
+});
+
+// POST /api/segments/count — count friends matching segment conditions
+broadcasts.post('/api/segments/count', async (c) => {
+  const body = await c.req.json<{ conditions: unknown; accountId?: string }>();
+  try {
+    const { buildSegmentQuery } = await import('../services/segment-query.js');
+    const { sql, bindings } = buildSegmentQuery(body.conditions as SegmentCondition);
+
+    let accountSql = sql;
+    const accountBindings = [...bindings];
+    if (body.accountId) {
+      accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      accountBindings.unshift(body.accountId);
+    }
+
+    const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');
+    const result = await c.env.DB.prepare(countSql).bind(...accountBindings).first<{ count: number }>();
+
+    return c.json({ success: true, count: result?.count ?? 0 });
+  } catch (err) {
+    console.error('POST /api/segments/count error:', err);
+    return c.json({ success: false, error: 'Invalid segment conditions' }, 400);
   }
 });
 

@@ -23,13 +23,14 @@ export async function getBroadcasts(db: D1Database, accountId?: string): Promise
        bi.status as insight_status,
        bi.open_rate, bi.click_rate
 FROM broadcasts b
-LEFT JOIN broadcast_insights bi ON b.id = bi.broadcast_id`;
+LEFT JOIN broadcast_insights bi ON b.id = bi.broadcast_id
+  AND bi.id = (SELECT id FROM broadcast_insights WHERE broadcast_id = b.id ORDER BY created_at DESC LIMIT 1)`;
   const params: unknown[] = [];
   if (accountId) {
     sql += ` WHERE b.line_account_id = ?`;
     params.push(accountId);
   }
-  sql += ` ORDER BY b.created_at DESC`;
+  sql += ` ORDER BY COALESCE(b.sent_at, b.scheduled_at, b.created_at) DESC`;
   const result = params.length > 0
     ? await db.prepare(sql).bind(...params).all<Broadcast>()
     : await db.prepare(sql).all<Broadcast>();
@@ -276,6 +277,51 @@ export async function markInsightFailed(
       `UPDATE broadcast_insights SET retry_count = ?, status = ? WHERE id = ?`,
     )
     .bind(retryCount + 1, newStatus, insightId)
+    .run();
+}
+
+export async function getQueuedBroadcasts(db: D1Database): Promise<Broadcast[]> {
+  // Only pick up broadcasts explicitly queued via segment_conditions
+  // (segment_conditions IS NOT NULL distinguishes queued batches from normal tag sends)
+  // batch_offset >= 0: ロック中（-1）のものは除外
+  // sent_at IS NULL: 完了済みは除外
+  const result = await db
+    .prepare(
+      `SELECT * FROM broadcasts WHERE status = 'sending' AND batch_offset >= 0 AND sent_at IS NULL AND segment_conditions IS NOT NULL ORDER BY created_at ASC`,
+    )
+    .all<Broadcast>();
+  return result.results;
+}
+
+/**
+ * ロック解除: batch_offset=-1 のまま停滞したブロードキャストを復旧する。
+ * 条件: success_count=0 + created_at から30分以上経過 + segment_conditions あり
+ * 送信途中で停滞したもの（success_count > 0）は手動対応。
+ */
+export async function recoverStalledBroadcasts(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE broadcasts SET batch_offset = 0
+       WHERE status = 'sending' AND batch_offset = -1
+       AND sent_at IS NULL AND success_count = 0
+       AND segment_conditions IS NOT NULL
+       AND julianday('now', '+9 hours') - julianday(created_at) > 0.021`,
+    )
+    .run();
+  // 0.021 日 ≈ 30分
+}
+
+export async function updateBroadcastBatchProgress(
+  db: D1Database,
+  id: string,
+  batchOffset: number,
+  additionalSuccess: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE broadcasts SET batch_offset = ?, success_count = success_count + ? WHERE id = ?`,
+    )
+    .bind(batchOffset, additionalSuccess, id)
     .run();
 }
 
