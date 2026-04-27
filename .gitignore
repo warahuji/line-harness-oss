@@ -14,3 +14,7 @@ dist/
 apps/web/out/
 apps/worker/dist/
 .worktrees/
+wrangler.local.toml
+apps/worker/wrangler.local.toml
+.dev.vars
+apps/worker/.dev.vars

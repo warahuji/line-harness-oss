@@ -381,6 +381,31 @@ async function handleEvent(
       }
     }
 
+    // AI自動返信チェック（auto-replyより先に実行）
+    if (!isAutoKeyword && !isTimeCommand) {
+      try {
+        const { generateAiReply } = await import('../services/ai-reply.js');
+        const aiResult = await generateAiReply(db, incomingText, friend.id, friend.display_name, lineAccountId);
+        if (aiResult) {
+          await lineClient.replyMessage(event.replyToken, [buildMessage('text', aiResult.response)]);
+          // 送信ログ
+          await db
+            .prepare(
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+               VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'reply', ?)`,
+            )
+            .bind(crypto.randomUUID(), friend.id, aiResult.response, jstNow())
+            .run();
+          console.log(`[ai-reply] responded in ${aiResult.latencyMs}ms, tokens=${aiResult.tokensUsed}`);
+          // AI返信した場合はauto-replyとイベントバスをスキップ
+          return;
+        }
+      } catch (err) {
+        console.error('[ai-reply] error:', err);
+        // AI返信失敗時は既存auto-replyにフォールバック
+      }
+    }
+
     // 自動返信チェック（このアカウントのルール + グローバルルールのみ）
     // NOTE: Auto-replies use replyMessage (free, no quota) instead of pushMessage
     // The replyToken is only valid for ~1 minute after the message event
