@@ -112,6 +112,13 @@ export default function AiSettingsPage() {
   const [logs, setLogs] = useState<AiReplyLog[]>([])
   const [activeTab, setActiveTab] = useState<'settings' | 'knowledge' | 'logs'>('settings')
 
+  // --- Toast ---
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 2500)
+  }
+
   const fetchSettings = useCallback(async () => {
     try {
       const res = await api.get('/api/ai-settings')
@@ -154,9 +161,8 @@ export default function AiSettingsPage() {
   const handleSaveSettings = async () => {
     setSaving(true)
     try {
-      // APIキーが変更されてない場合（マスク値のまま）は送らない
       const apiKeyChanged = apiKey !== originalApiKey
-      await api.put('/api/ai-settings', {
+      const res = await api.put('/api/ai-settings', {
         provider,
         apiKey: apiKeyChanged ? apiKey : undefined,
         modelId,
@@ -165,9 +171,14 @@ export default function AiSettingsPage() {
         temperature,
         isActive,
       })
-      await fetchSettings()
+      if (res.success) {
+        showToast('設定を保存しました')
+        await fetchSettings()
+      } else {
+        showToast(`保存失敗: ${(res as { error?: string }).error || '不明なエラー'}`, 'error')
+      }
     } catch (err) {
-      alert('保存に失敗しました: ' + String(err))
+      showToast(`保存失敗: ${String(err)}`, 'error')
     }
     setSaving(false)
   }
@@ -200,6 +211,7 @@ export default function AiSettingsPage() {
           content: articleContent,
           sourceUrl: articleUrl || null,
         })
+        showToast('ナレッジを更新しました')
       } else {
         await api.post('/api/knowledge', {
           title: articleTitle,
@@ -207,11 +219,12 @@ export default function AiSettingsPage() {
           content: articleContent,
           sourceUrl: articleUrl || null,
         })
+        showToast('ナレッジを追加しました')
       }
       resetArticleForm()
       await fetchArticles()
     } catch (err) {
-      alert('保存に失敗しました: ' + String(err))
+      showToast(`保存失敗: ${String(err)}`, 'error')
     }
   }
 
@@ -219,8 +232,11 @@ export default function AiSettingsPage() {
     if (!confirm('このナレッジを削除しますか？')) return
     try {
       await api.delete(`/api/knowledge/${id}`)
+      showToast('ナレッジを削除しました')
       await fetchArticles()
-    } catch {}
+    } catch (err) {
+      showToast(`削除失敗: ${String(err)}`, 'error')
+    }
   }
 
   const handleScrape = async () => {
@@ -270,6 +286,18 @@ export default function AiSettingsPage() {
   return (
     <>
       <Header title="AI自動返信" description="AIがナレッジを参照して自動返信します（Reply API = 無料）" />
+
+      {/* トースト */}
+      {toast && (
+        <div
+          className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium text-white animate-fade-in ${
+            toast.type === 'success' ? 'bg-green-500' : 'bg-red-500'
+          }`}
+          style={{ backgroundColor: toast.type === 'success' ? '#06C755' : undefined }}
+        >
+          {toast.message}
+        </div>
+      )}
 
       {/* タブ */}
       <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
