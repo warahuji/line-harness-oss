@@ -382,7 +382,7 @@ async function handleEvent(
     }
 
     // AI自動返信チェック（auto-replyより先に実行）
-    if (!isAutoKeyword && !isTimeCommand) {
+    if (!isTimeCommand) {
       try {
         const { generateAiReply } = await import('../services/ai-reply.js');
         const aiResult = await generateAiReply(db, incomingText, friend.id, friend.display_name, lineAccountId);
