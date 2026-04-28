@@ -19,3 +19,5 @@ wrangler.local.toml
 apps/worker/wrangler.local.toml
 .dev.vars
 apps/worker/.dev.vars
+scripts/input/
+scripts/output/
